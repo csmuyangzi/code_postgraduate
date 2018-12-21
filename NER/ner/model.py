@@ -141,6 +141,60 @@ class Model(object):
                 dtype=tf.float32,
                 sequence_length=lengths)
         return tf.concat(outputs, axis=2)
+    
+    def IDCNN_layer(self, model_inputs, 
+                    name=None):
+        model_inputs = tf.expand_dims(model_inputs, 1)
+        reuse = False
+        if self.dropout == 1.0:
+            reuse = True
+        with tf.variable_scope("idcnn" if not name else name):
+            shape=[1, self.filter_width, self.embedding_dim,
+                       self.num_filter]
+            print(shape)
+            filter_weights = tf.get_variable(
+                "idcnn_filter",
+                shape=[1, self.filter_width, self.embedding_dim,
+                       self.num_filter],
+                initializer=self.initializer)
+        
+            layerInput = tf.nn.conv2d(model_inputs,
+                                      filter_weights,
+                                      strides=[1, 1, 1, 1],
+                                      padding="SAME",
+                                      name="init_layer")
+            finalOutFromLayers = []
+            totalWidthForLastDim = 0
+            for j in range(self.repeat_times):
+                for i in range(len(self.layers)):
+                    dilation = self.layers[i]['dilation']
+                    isLast = True if i == (len(self.layers) - 1) else False
+                    with tf.variable_scope("atrous-conv-layer-%d" % i,
+                                           reuse=True
+                                           if (reuse or j > 0) else False):
+                        w = tf.get_variable(
+                            "filterW",
+                            shape=[1, self.filter_width, self.num_filter,
+                                   self.num_filter],
+                            initializer=tf.contrib.layers.xavier_initializer())
+                        b = tf.get_variable("filterB", shape=[self.num_filter])
+                        conv = tf.nn.atrous_conv2d(layerInput,
+                                                   w,
+                                                   rate=dilation,
+                                                   padding="SAME")
+                        conv = tf.nn.bias_add(conv, b)
+                        conv = tf.nn.relu(conv)
+                        if isLast:
+                            finalOutFromLayers.append(conv)
+                            totalWidthForLastDim += self.num_filter
+                        layerInput = conv
+            finalOut = tf.concat(axis=3, values=finalOutFromLayers)
+            keepProb = 1.0 if reuse else 0.5
+            finalOut = tf.nn.dropout(finalOut, keepProb)
+            finalOut = tf.squeeze(finalOut, [1])
+            finalOut = tf.reshape(finalOut, [-1, totalWidthForLastDim])
+            self.cnn_output_width = totalWidthForLastDim
+            return finalOut
 
     def project_layer_bilstm(self, lstm_outputs, name=None):
         with tf.variable_scope("project" if not name else name):
